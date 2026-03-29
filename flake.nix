@@ -4,13 +4,13 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11-small";
 
   inputs.nix = {
-    url = "github:NixOS/nix/2.32-maintenance";
+    url = "github:NixOS/nix/2.34-maintenance";
     # We want to control the deps precisely
     flake = false;
   };
 
   inputs.nix-eval-jobs = {
-    url = "github:nix-community/nix-eval-jobs/v2.32.1";
+    url = "github:NixOS/nix-eval-jobs/v2.34.1";
     # We want to control the deps precisely
     flake = false;
   };
@@ -19,10 +19,35 @@
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forEachSystem = nixpkgs.lib.genAttrs systems;
+
+      version = nixpkgs.lib.strings.trim (builtins.readFile ./version.txt);
+
+      releaseVersion = "${version}.${builtins.substring 0 8 (self.lastModifiedDate or "19700101")}.${self.shortRev or "DIRTY"}";
+
+      mkHydraComponents = { pkgs, nixComponents }:
+        pkgs.lib.makeScope pkgs.newScope (self': {
+          inherit version releaseVersion;
+          nix-eval-jobs = self'.callPackage nix-eval-jobs {
+            inherit nixComponents;
+          };
+          hydra = self'.callPackage ./subprojects/hydra/package.nix {
+            inherit nixComponents;
+            rawSrc = self;
+          };
+          hydra-tests = self'.callPackage ./subprojects/hydra-tests/package.nix {
+            inherit nixComponents;
+          };
+          hydra-manual = self'.callPackage ./subprojects/hydra-manual/package.nix {
+          };
+          hydra-linters = self'.callPackage ./subprojects/hydra-linters/package.nix {
+          };
+          hydra-queue-runner = self'.callPackage ./subprojects/hydra-queue-runner/package.nix {
+            inherit nixComponents;
+          };
+        });
     in
     rec {
 
-      # A Nixpkgs overlay that provides a 'hydra' package.
       overlays.default = final: prev: {
         nixDependenciesForHydra = final.lib.makeScope final.newScope
           (import (nix + "/packaging/dependencies.nix") {
@@ -38,39 +63,25 @@
             src = nix;
             maintainers = [ ];
           });
-        nix-eval-jobs = final.callPackage nix-eval-jobs {
+        hydraComponents = mkHydraComponents {
+          pkgs = final;
           nixComponents = final.nixComponentsForHydra;
         };
-        hydra = final.callPackage ./package.nix {
-          inherit (final.lib) fileset;
-          rawSrc = self;
-          nixComponents = final.nixComponentsForHydra;
-        };
+        inherit (final.hydraComponents) hydra hydra-tests hydra-manual hydra-linters hydra-queue-runner;
       };
 
       hydraJobs = {
         build = forEachSystem (system: packages.${system}.hydra);
 
-        buildNoTests = forEachSystem (system:
-          packages.${system}.hydra.overrideAttrs (_: {
-            doCheck = false;
-          })
-        );
+        systemTests = forEachSystem (system: packages.${system}.hydra-tests);
 
-        manual = forEachSystem (system: let
-          pkgs = nixpkgs.legacyPackages.${system};
-          hydra = self.packages.${pkgs.stdenv.hostPlatform.system}.hydra;
-        in
-          pkgs.runCommand "hydra-manual-${hydra.version}" { }
-            ''
-              mkdir -p $out/share
-              cp -prvd ${hydra.doc}/share/doc $out/share/
+        manual = forEachSystem (system: packages.${system}.hydra-manual);
 
-              mkdir $out/nix-support
-              echo "doc manual $out/share/doc/hydra" >> $out/nix-support/hydra-build-products
-            '');
+        linters = forEachSystem (system: packages.${system}.hydra-linters);
 
-        tests = import ./nixos-tests.nix {
+        queueRunner = forEachSystem (system: packages.${system}.hydra-queue-runner);
+
+        nixosTests = import ./nixos-tests.nix {
           inherit forEachSystem nixpkgs nixosModules;
         };
 
@@ -78,9 +89,9 @@
       };
 
       checks = forEachSystem (system: {
-        build = hydraJobs.build.${system};
-        install = hydraJobs.tests.install.${system};
-        validate-openapi = hydraJobs.tests.validate-openapi.${system};
+        systemTests = hydraJobs.systemTests.${system};
+        install = hydraJobs.nixosTests.install.${system};
+        validate-openapi = hydraJobs.nixosTests.validate-openapi.${system};
       });
 
       packages = forEachSystem (system: let
@@ -99,21 +110,20 @@
             src = nix;
             maintainers = [ ];
           });
-      in {
-        nix-eval-jobs = pkgs.callPackage nix-eval-jobs {
-          inherit nixComponents;
+        hydraComponents = mkHydraComponents { inherit pkgs nixComponents; };
+      in hydraComponents // {
+        default = hydraComponents.hydra-tests;
+      });
+
+      devShells = forEachSystem (system: {
+        default = import ./packaging/dev-shell.nix {
+          pkgs = nixpkgs.legacyPackages.${system};
+          inherit (self.packages.${system}) hydra hydra-tests hydra-manual hydra-linters hydra-queue-runner;
         };
-        hydra = pkgs.callPackage ./package.nix {
-          inherit (nixpkgs.lib) fileset;
-          inherit nixComponents;
-          inherit (self.packages.${system}) nix-eval-jobs;
-          rawSrc = self;
-        };
-        default = self.packages.${system}.hydra;
       });
 
       nixosModules = import ./nixos-modules {
-        inherit self;
+        flakePackages = packages;
       };
 
       nixosConfigurations.container = nixpkgs.lib.nixosSystem {

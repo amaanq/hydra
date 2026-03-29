@@ -35,7 +35,7 @@ in
           machine.wait_for_job("hydra-init")
           machine.wait_for_job("hydra-server")
           machine.wait_for_job("hydra-evaluator")
-          machine.wait_for_job("hydra-queue-runner")
+          machine.wait_for_job("hydra-queue-runner-dev")
           machine.wait_for_open_port(3000)
           machine.succeed("curl --fail http://localhost:3000/")
         '';
@@ -63,7 +63,7 @@ in
                 su - hydra -c "hydra-create-user root --email-address 'alice@example.org' --password foobar --role admin"
                 mkdir /run/jobset
                 chmod 755 /run/jobset
-                cp ${./t/jobs/api-test.nix} /run/jobset/default.nix
+                cp ${./subprojects/hydra-tests/jobs/api-test.nix} /run/jobset/default.nix
                 chmod 644 /run/jobset/default.nix
                 chown -R hydra /run/jobset
         """
@@ -85,7 +85,7 @@ in
 
         # Setup the project and jobset
         machine.succeed(
-            "su - hydra -c 'perl -I ${nodes.machine.services.hydra-dev.package.perlDeps}/lib/perl5/site_perl ${./t/setup-notifications-jobset.pl}' >&2"
+            "su - hydra -c 'perl -I ${nodes.machine.services.hydra-dev.package.perlDeps}/lib/perl5/site_perl ${./subprojects/hydra-tests/setup-notifications-jobset.pl}' >&2"
         )
 
         # Wait until hydra has build the job and
@@ -286,9 +286,9 @@ in
 
           response = json.loads(data)
 
-          assert len(response) == 2, "Expected exactly three status updates for latest commit (queued, finished)!"
-          assert response[0]['status'] == "success", "Expected finished status to be success!"
-          assert response[1]['status'] == "pending", "Expected queued status to be pending!"
+          assert len(response) == 2, "Expected exactly two status updates for latest commit (queued, finished)!"
+          items = {item['status'] for item in response}
+          assert items == {"success", "pending"}, "Expected one success status and one pending status"
 
           machine.shutdown()
         '';

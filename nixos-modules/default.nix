@@ -1,16 +1,55 @@
-{ self }:
+{ flakePackages }:
 
-{
-  hydra = { pkgs, lib,... }: {
+rec {
+  web-app = { pkgs, lib, ... }: {
     _file = ./default.nix;
-    imports = [ ./hydra.nix ];
-    services.hydra-dev.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.hydra;
+    imports = [ ./web-app.nix ];
+    services.hydra-dev.package =
+      lib.mkDefault flakePackages.${pkgs.stdenv.hostPlatform.system}.hydra;
+  };
+
+  postgresql = ./postgresql.nix;
+
+  queue-runner = { pkgs, lib, ... }: {
+    _file = ./default.nix;
+    imports = [ ./queue-runner-module.nix ];
+    services.hydra-queue-runner-dev.package =
+      lib.mkDefault flakePackages.${pkgs.stdenv.hostPlatform.system}.hydra-queue-runner;
+  };
+
+  linux-builder = { pkgs, lib, ... }: {
+    _file = ./default.nix;
+    imports = [ ./linux-builder-module.nix ];
+    services.hydra-queue-builder-dev.package =
+      lib.mkDefault flakePackages.${pkgs.stdenv.hostPlatform.system}.hydra-queue-runner;
+  };
+
+  darwin-builder = { pkgs, lib, ... }: {
+    _file = ./default.nix;
+    imports = [ ./darwin-builder-module.nix ];
+    services.hydra-queue-builder-dev.package =
+      lib.mkDefault flakePackages.${pkgs.stdenv.hostPlatform.system}.hydra-queue-runner;
+  };
+
+  hydra = { ... }: {
+    _file = ./default.nix;
+    imports = [
+      web-app
+      queue-runner
+      linux-builder
+    ];
   };
 
   hydraTest = { pkgs, ... }: {
     services.hydra-dev.enable = true;
     services.hydra-dev.hydraURL = "http://hydra.example.org";
     services.hydra-dev.notificationSender = "admin@hydra.example.org";
+
+    services.hydra-queue-runner-dev.enable = true;
+
+    services.hydra-queue-builder-dev.enable = true;
+    services.hydra-queue-builder-dev.queueRunnerAddr = "http://[::1]:50051";
+    systemd.services.hydra-queue-builder-dev.after = [ "hydra-queue-runner-dev.service" ];
 
     systemd.services.hydra-send-stats.enable = false;
 
