@@ -1479,6 +1479,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "jiff",
+ "libc",
  "listenfd",
  "nix-utils",
  "parking_lot",

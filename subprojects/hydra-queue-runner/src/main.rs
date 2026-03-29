@@ -1,4 +1,3 @@
-#![forbid(unsafe_code)]
 #![deny(
     clippy::all,
     clippy::pedantic,
@@ -73,6 +72,47 @@ fn spawn_config_reloader(
     task.abort_handle()
 }
 
+fn install_sigbus_handler() {
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = sigbus_handler as usize;
+        sa.sa_flags = libc::SA_SIGINFO | libc::SA_RESETHAND;
+        libc::sigaction(libc::SIGBUS, &sa, std::ptr::null_mut());
+    }
+}
+
+unsafe extern "C" fn sigbus_handler(
+    sig: libc::c_int,
+    info: *mut libc::siginfo_t,
+    _ctx: *mut libc::c_void,
+) {
+    unsafe {
+        let addr = if info.is_null() {
+            0usize
+        } else {
+            (*info).si_addr() as usize
+        };
+        let msg = b"\n*** SIGBUS (Bus error) at address 0x";
+        libc::write(2, msg.as_ptr().cast(), msg.len());
+        let mut buf = [0u8; 16];
+        let mut a = addr;
+        for i in (0..16).rev() {
+            let d = (a & 0xf) as u8;
+            buf[i] = if d < 10 { b'0' + d } else { b'a' + d - 10 };
+            a >>= 4;
+        }
+        libc::write(2, buf.as_ptr().cast(), 16);
+        libc::write(2, b"\n".as_ptr().cast(), 1);
+
+        let mut frames = [std::ptr::null_mut::<libc::c_void>(); 64];
+        let n = libc::backtrace(frames.as_mut_ptr(), 64);
+        libc::backtrace_symbols_fd(frames.as_ptr(), n, 2);
+
+        libc::signal(sig, libc::SIG_DFL);
+        libc::raise(sig);
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let tracing_guard = hydra_tracing::init()?;
@@ -89,6 +129,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     nix_utils::init_nix();
+    install_sigbus_handler();
     let state = State::new(&tracing_guard).await?;
     if state.cli.status {
         state.get_status_from_main_process().await?;
